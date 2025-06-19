@@ -1,0 +1,3 @@
+Selinium + Wordle test + game state + Qwen 1b llm on a loop deployed in local docker container. We have a game session (all 5 words) with 5 guesses. 
+we use a type of GRPO here where we reward the quality of each guess, of the session (exponentialy higher reward for lower number of guesses needed) as well as rewarding for correctly outputting the game state output as we prompt it to. 
+

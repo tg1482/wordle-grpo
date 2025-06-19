@@ -1,0 +1,22 @@
+[project]
+name = "grpo-training"
+version = "0.1.0"
+description = "GRPO training for mathematical reasoning"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6.0",
+    "setuptools",
+    "accelerate",
+    "peft",
+    "wandb",
+    "rich",
+    "trl>=0.17.0",
+    "datasets>=3.6.0",
+    "transformers",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.0.0",
+] 
