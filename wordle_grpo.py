@@ -30,10 +30,10 @@ def load_words_from_file(file_path: str = "wordle_words.txt") -> List[str]:
             return words
     except FileNotFoundError:
         print(f"Words file {file_path} not found. Using fallback word list.")
-        return ["HELLO", "WORLD", "TRAIN"]
+        return ["HELLO", "WORLD", "TRAIN", "APPLE", "BEACH", "CRANE", "SLOTH", "BRICK"]
     except Exception as e:
         print(f"Error loading words from {file_path}: {e}. Using fallback word list.")
-        return ["HELLO", "WORLD", "TRAIN"]
+        return ["HELLO", "WORLD", "TRAIN", "APPLE", "BEACH", "CRANE", "SLOTH", "BRICK"]
 
 
 # Load words at module level
@@ -139,7 +139,7 @@ class WordleGame:
         return game
 
 
-# Prompts and formatting
+# Improved system prompt with <think> format
 WORDLE_SYSTEM_PROMPT = """You are playing Wordle. You need to guess a 5-letter word.
 
 For each guess, you'll see feedback:
@@ -147,25 +147,46 @@ For each guess, you'll see feedback:
 🟨 = Correct letter in wrong position  
 ⬛ = Letter not in the word
 
-Respond in this format:
-<reasoning>
-Based on the feedback, I should...
-</reasoning>
+ALWAYS respond in this EXACT format:
+<think>
+Your thinking here
+</think>
 <guess>
-YOURGUESS
+WORD
+</guess>
+
+Example:
+<think>
+I'll start with a word that has common vowels and consonants to gather information.
+</think>
+<guess>
+CRANE
 </guess>"""
 
 
 def extract_wordle_guess(text: str) -> str:
     """Extract the guess from the model's response."""
     try:
-        guess = text.split("<guess>")[-1]
-        guess = guess.split("</guess>")[0]
-        return guess.strip().upper()
-    except:
-        # Fallback: try to find any 5-letter word
+        # Look for <guess>WORD</guess> pattern
+        guess_match = re.search(
+            r"<guess>\s*([A-Za-z]{5})\s*</guess>", text, re.IGNORECASE
+        )
+        if guess_match:
+            return guess_match.group(1).upper()
+
+        # Fallback: look for any 5-letter word
         words = re.findall(r"\b[A-Za-z]{5}\b", text)
-        return words[0].upper() if words else "GUESS"
+        if words:
+            # Prefer words from our word list
+            for word in words:
+                if word.upper() in WORD_LIST:
+                    return word.upper()
+            return words[0].upper()
+
+        # Last resort: return a random valid word
+        return random.choice(WORD_LIST)
+    except:
+        return random.choice(WORD_LIST)
 
 
 def create_wordle_dataset(num_games: int = 100) -> Dataset:
@@ -176,11 +197,11 @@ def create_wordle_dataset(num_games: int = 100) -> Dataset:
         game = WordleGame()
         session_messages = [{"role": "system", "content": WORDLE_SYSTEM_PROMPT}]
 
-        # Start the game
+        # Start the game with a clearer prompt
         session_messages.append(
             {
                 "role": "user",
-                "content": f"Let's play Wordle! You have 6 guesses to find the 5-letter word.\n\n{game.get_state()}\n\nMake your first guess:",
+                "content": f"Let's play Wordle! You have 6 guesses to find the 5-letter word.\n\n{game.get_state()}\n\nMake your first guess following the format exactly:",
             }
         )
 
@@ -188,7 +209,7 @@ def create_wordle_dataset(num_games: int = 100) -> Dataset:
             {
                 "prompt": session_messages.copy(),
                 "target_word": game.target_word,
-                "game_state": game.to_dict(),  # Store serializable dict instead of game object
+                "game_state": game.to_dict(),
                 "guess_number": 1,
             }
         )
@@ -281,8 +302,8 @@ def wordle_guess_quality_reward(
 
 
 def wordle_format_reward(completions, **kwargs) -> List[float]:
-    """Reward for following the correct format."""
-    pattern = r"<reasoning>.*?</reasoning>\s*<guess>.*?</guess>"
+    """Reward for following the correct format with <think> and <guess>."""
+    pattern = r"<think>.*?</think>\s*<guess>\s*[A-Za-z]{5}\s*</guess>"
     rewards = []
 
     for i, completion in enumerate(completions):
@@ -306,19 +327,21 @@ def wordle_format_reward(completions, **kwargs) -> List[float]:
                 rewards.append(0.2)
         else:
             print(f"❌ Wrong format - Reward: 0.0")
+            print(f"Expected: <think>...</think><guess>WORD</guess>")
+            print(f"Got: {content[:100]}...")
             rewards.append(0.0)
 
     return rewards
 
 
 def wordle_reasoning_quality_reward(completions, **kwargs) -> List[float]:
-    """Reward for quality reasoning about the game state."""
+    """Reward for quality thinking about the game state."""
     rewards = []
 
     for i, completion in enumerate(completions):
         content = completion[0]["content"].lower()
         reward = 0.0
-        reasoning_points = []
+        thinking_points = []
 
         # Check for strategic thinking keywords
         if any(
@@ -326,25 +349,30 @@ def wordle_reasoning_quality_reward(completions, **kwargs) -> List[float]:
             for word in ["feedback", "eliminate", "narrow", "vowel", "consonant"]
         ):
             reward += 0.2
-            reasoning_points.append("strategic thinking (+0.2)")
+            thinking_points.append("strategic thinking (+0.2)")
 
         if any(word in content for word in ["position", "correct", "wrong", "place"]):
             reward += 0.2
-            reasoning_points.append("position awareness (+0.2)")
+            thinking_points.append("position awareness (+0.2)")
 
         if any(
             word in content for word in ["common", "frequent", "likely", "probable"]
         ):
             reward += 0.1
-            reasoning_points.append("probability thinking (+0.1)")
+            thinking_points.append("probability thinking (+0.1)")
 
-        print(f"🧠 Reasoning Quality for Sample {i+1}:")
-        if reasoning_points:
-            for point in reasoning_points:
+        # Check if they're actually using the <think> section
+        if "<think>" in content and "</think>" in content:
+            reward += 0.1
+            thinking_points.append("using think section (+0.1)")
+
+        print(f"🧠 Thinking Quality for Sample {i+1}:")
+        if thinking_points:
+            for point in thinking_points:
                 print(f"   • {point}")
         else:
-            print(f"   • No strategic reasoning detected")
-        print(f"   💭 Reasoning reward: {reward:.2f}")
+            print(f"   • No strategic thinking detected")
+        print(f"   💭 Thinking reward: {reward:.2f}")
 
         rewards.append(reward)
 
@@ -414,7 +442,7 @@ run_name = "Qwen-0.6B-Wordle-GRPO"
 
 # Create Wordle dataset
 print("Creating Wordle dataset...")
-wordle_dataset = create_wordle_dataset(num_games=10)  # Reduced for easier debugging
+wordle_dataset = create_wordle_dataset(num_games=5)  # Even smaller for debugging
 print(f"Created dataset with {len(wordle_dataset)} games")
 
 # Print a sample from the dataset
@@ -423,67 +451,50 @@ sample = wordle_dataset[0]
 print(f"Target word: {sample['target_word']}")
 print(f"Prompt: {sample['prompt'][-1]['content'][:300]}...")
 
-# Training configuration
+# Training configuration - more stable settings
 training_args = GRPOConfig(
     output_dir=output_dir,
     run_name=run_name,
-    learning_rate=1e-7,
+    learning_rate=5e-7,  # Even smaller learning rate
     adam_beta1=0.9,
-    adam_beta2=0.999,
-    adam_epsilon=1e-8,
+    adam_beta2=0.95,  # Lower beta2 for stability
+    adam_epsilon=1e-6,  # Larger epsilon for numerical stability
     weight_decay=0.01,
     warmup_ratio=0.1,
     lr_scheduler_type="cosine",
     logging_steps=1,
-    bf16=device == "cuda",
+    bf16=False,  # Disable mixed precision for stability
     fp16=False,
     per_device_train_batch_size=1,
-    gradient_accumulation_steps=2,  # Reduced for more frequent logging
+    gradient_accumulation_steps=2,  # No accumulation for simpler debugging
     num_generations=2,
-    max_prompt_length=512,
-    max_completion_length=256,
+    max_prompt_length=256,  # Shorter prompts
+    max_completion_length=150,  # Shorter completions
     num_train_epochs=1,
-    save_steps=25,  # More frequent saves
-    max_grad_norm=1.0,
-    report_to="wandb",
+    save_steps=10,
+    max_grad_norm=0.5,  # Stronger gradient clipping
+    report_to=None,  # Disable wandb for debugging
     log_on_each_node=False,
-    temperature=0.8,
-    top_p=0.9,
+    temperature=0.7,  # Lower temperature for stability
+    top_p=0.85,
 )
 
-# PEFT configuration
-peft_config = LoraConfig(
-    r=16,
-    lora_alpha=64,
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "up_proj",
-        "down_proj",
-        "gate_proj",
-    ],
-    task_type="CAUSAL_LM",
-    lora_dropout=0.05,
-)
-
-# Model loading
+# Model loading with more stable settings
 model_kwargs = {
     "torch_dtype": torch_dtype,
     "device_map": None,
 }
 
-if use_flash_attn:
-    try:
-        model_kwargs["attn_implementation"] = "flash_attention_2"
-        print("Using flash attention")
-    except Exception as e:
-        print(f"Flash attention not available: {e}, using default attention")
+# Don't use flash attention for debugging
+print("Using default attention for stability")
 
 model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs).to(device)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+# Set pad token id in training args
+training_args.pad_token_id = tokenizer.pad_token_id
 
 # Create trainer with verbose output
 trainer = VerboseGRPOTrainer(
@@ -496,7 +507,6 @@ trainer = VerboseGRPOTrainer(
     ],
     args=training_args,
     train_dataset=wordle_dataset,
-    # peft_config=peft_config  # Uncomment if you want to use PEFT
 )
 
 if __name__ == "__main__":
@@ -509,27 +519,32 @@ if __name__ == "__main__":
         {"role": "system", "content": WORDLE_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": "Let's play Wordle! Make your first guess for a 5-letter word.",
+            "content": "Let's play Wordle! Make your first guess following the format exactly with <think> and <guess> tags:",
         },
     ]
 
-    inputs = tokenizer.apply_chat_template(
-        test_messages, return_tensors="pt", add_generation_prompt=True
-    )
-    inputs = inputs.to(device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs,
-            max_new_tokens=150,
-            temperature=0.8,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
+    try:
+        inputs = tokenizer.apply_chat_template(
+            test_messages, return_tensors="pt", add_generation_prompt=True
         )
+        inputs = inputs.to(device)
 
-    response = tokenizer.decode(outputs[0][inputs.shape[1] :], skip_special_tokens=True)
-    print(f"Pre-training response: {response}")
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs,
+                max_new_tokens=100,
+                temperature=0.7,
+                top_p=0.85,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs.shape[1] :], skip_special_tokens=True
+        )
+        print(f"Pre-training response: {response}")
+    except Exception as e:
+        print(f"Error in pre-training test: {e}")
 
     trainer.train()
     print("Training completed!")
